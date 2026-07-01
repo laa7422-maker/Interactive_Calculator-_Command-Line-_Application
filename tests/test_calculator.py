@@ -1,75 +1,79 @@
-""" tests/test_calculator.py """
-import sys
-from io import StringIO
-from app.calculator import calculator
+import pytest
+from decimal import Decimal
+from app.calculator import Calculator
+from app.calculator_config import CalculatorConfig
+from app.exceptions import OperationError, ValidationError
 
 
-# Helper function to capture print statements
-def run_calculator_with_input(monkeypatch, inputs):
-    """
-    Simulates user input and captures output from the calculator REPL.
-    
-    :param monkeypatch: pytest fixture to simulate user input
-    :param inputs: list of inputs to simulate
-    :return: captured output as a string
-    """
-    input_iterator = iter(inputs)
-    monkeypatch.setattr('builtins.input', lambda _: next(input_iterator))
-
-    # Capture the output of the calculator
-    captured_output = StringIO()
-    sys.stdout = captured_output
-    calculator()
-    sys.stdout = sys.__stdout__  # Reset stdout
-    return captured_output.getvalue()
+@pytest.fixture
+def calc(tmp_path):
+    cfg = CalculatorConfig(log_dir=tmp_path / "l", history_dir=tmp_path / "h",
+                           max_history_size=5, auto_save=False)
+    return Calculator(cfg)
 
 
-# Positive Tests
-def test_addition(monkeypatch):
-    """Test addition operation in REPL."""
-    inputs = ["add 2 3", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Result: 5.0" in output
+def test_perform(calc):
+    assert calc.perform_operation("add", "2", "3") == Decimal("5")
+    assert len(calc.history) == 1
 
 
-def test_subtraction(monkeypatch):
-    """Test subtraction operation in REPL."""
-    inputs = ["subtract 5 2", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Result: 3.0" in output
+def test_bad_number(calc):
+    with pytest.raises(ValidationError):
+        calc.perform_operation("add", "abc", "3")
 
 
-def test_multiplication(monkeypatch):
-    """Test multiplication operation in REPL."""
-    inputs = ["multiply 4 5", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Result: 20.0" in output
+def test_too_big(calc):
+    with pytest.raises(ValidationError):
+        calc.perform_operation("add", "1e20", "1")
 
 
-def test_division(monkeypatch):
-    """Test division operation in REPL."""
-    inputs = ["divide 10 2", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Result: 5.0" in output
+def test_unknown_op(calc):
+    with pytest.raises(ValidationError):
+        calc.perform_operation("xyz", "1", "2")
 
 
-# Negative Tests
-def test_invalid_operation(monkeypatch):
-    """Test invalid operation in REPL."""
-    inputs = ["modulus 5 3", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Unknown operation" in output
+def test_div_zero(calc):
+    with pytest.raises(OperationError):
+        calc.perform_operation("divide", "1", "0")
 
 
-def test_invalid_input_format(monkeypatch):
-    """Test invalid input format in REPL."""
-    inputs = ["add two three", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Invalid input. Please follow the format" in output
+def test_undo_redo(calc):
+    calc.perform_operation("add", "1", "1")
+    calc.perform_operation("add", "2", "2")
+    assert calc.undo() is True
+    assert len(calc.history) == 1
+    assert calc.redo() is True
+    assert len(calc.history) == 2
 
 
-def test_division_by_zero(monkeypatch):
-    """Test division by zero in REPL."""
-    inputs = ["divide 5 0", "exit"]
-    output = run_calculator_with_input(monkeypatch, inputs)
-    assert "Division by zero is not allowed" in output
+def test_undo_empty(calc):
+    assert calc.undo() is False
+
+
+def test_redo_empty(calc):
+    assert calc.redo() is False
+
+
+def test_clear(calc):
+    calc.perform_operation("add", "1", "1")
+    calc.clear_history()
+    assert calc.get_history() == []
+
+
+def test_max_size(calc):
+    for i in range(10):
+        calc.perform_operation("add", str(i), "1")
+    assert len(calc.history) == 5
+
+
+def test_save_load(calc):
+    calc.perform_operation("add", "2", "3")
+    calc.save_history()
+    other = Calculator(calc.config)
+    other.load_history()
+    assert other.history[0].result == Decimal("5")
+
+
+def test_load_missing(calc):
+    with pytest.raises(OperationError):
+        calc.load_history()
